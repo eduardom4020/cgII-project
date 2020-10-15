@@ -7,17 +7,32 @@
 import math
 import random
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageFilter
 
 
 # In[2]:
+
+
+class CoordinateSystem:
+
+    def __init__(self, anchor):
+        up = np.array([anchor.x + 0.000001, anchor.y + 1, anchor.z])
+        self.i = Vector(*np.cross(np.array(anchor.to_list()), up)).normalize(4)
+        self.j = Vector(*np.cross(np.array(self.i.to_list()), np.array(anchor.to_list()))).normalize(4)
+        self.k = Vector(*np.cross(np.array(self.j.to_list()), np.array(self.i.to_list()))).normalize(4)
+        
+    def __str__(self):
+        return f'{str(self.i)}\n{str(self.j)}\n{str(self.k)}'
+
+
+# In[3]:
 
 
 def HasDecimalPlaces(number):
     return (number / 2) % 1 > 0
 
 
-# In[3]:
+# In[4]:
 
 
 def GeneratePixelGrid(rays_amt):
@@ -45,11 +60,13 @@ def ToViewportPoint(center, point, width, height, distance):
     half_h = height / 2
     half_w = width / 2
     
-    return Point(
-        center.x + (point.x - half_w), 
-        center.y + (point.y - half_h),
-        center.z + distance
-    ).to_list()
+    viewport_size = (6.6, 5)
+    
+    x = center.x + (point.x - half_w) * (viewport_size[0]/width) #* (width / height)
+    y = center.y + (point.y - half_h) * (viewport_size[1]/height)
+    z = center.z + distance
+    
+    return Point(x, y, z).to_list()
         
 class Scene:
     """
@@ -57,13 +74,15 @@ class Scene:
     position, the different objects present, etc.
     """
 
-    def __init__(self, camera, objects, lights, width, height, viewport_dist):
+    def __init__(self, camera, objects, lights, width, height, viewport_dist, rot_cam_x, rot_cam_y):
         self.camera = camera
         self.objects = objects
         self.lights = lights
         self.width = width
         self.height = height
         self.viewport_dist = viewport_dist
+        self.rot_cam_x = rot_cam_x
+        self.rot_cam_y = rot_cam_y
 
     def render(self):
         """
@@ -72,18 +91,30 @@ class Scene:
         """
         
         pixels = np.zeros((self.height, self.width, 3))
-        grid = GeneratePixelGrid(16)
         
         for y in range(self.height):
+#             print('row ', y, ' of ', self.height)
             for x in range(self.width):
-                noisy_points = grid + ToViewportPoint(self.camera, Point(x, y), self.width, self.height, self.viewport_dist)
-                noisy_ray_directions = noisy_points - self.camera.to_list()
+                grid = GeneratePixelGrid(16)
+#                 noisy_points = grid + ToViewportPoint(self.camera, Point(x, y), self.width, self.height, self.viewport_dist)
+#                 noisy_ray_directions = noisy_points - self.camera.to_list()
+                noisy_points = grid + Point(x, y).to_list()
+                noisy_ray_directions = [ToViewportPoint(
+                    self.camera, 
+                    Point(*noisy_pt), 
+                    self.width, 
+                    self.height, 
+                    self.viewport_dist
+                ) for noisy_pt in noisy_points.tolist()]
 #                 check what is causing perspective error
                 colors = np.zeros((0, 3))
                 
                 for ray_direction in noisy_ray_directions:
-                    direction = Vector(*ray_direction.tolist())
-                    ray = Ray(self.camera, direction)
+#                     direction = Vector(*ray_direction.tolist())
+                    direction = Vector(*ray_direction) - self.camera
+                    origin = self.camera
+                    ray = Ray(origin, direction)
+#                     ray.rotate_direction(self.rot_cam_x, self.rot_cam_y)
                     color = self._shoot_ray(ray)
                     colors = np.vstack([colors, color.to_list()])
                 
@@ -125,7 +156,8 @@ class Scene:
             color += self._shoot_ray(reflected_ray, depth + 1) * obj.material.specular
             return color
         
-        except:
+        except Exception as e:
+            print(str(e))
             return Color()
 
     def _get_intersection(self, ray):
@@ -155,8 +187,10 @@ class Vector:
     def norm(self):
         return math.sqrt(sum(num * num for num in self))
 
-    def normalize(self):
-        return self / self.norm()
+    def normalize(self, decimal=0):
+        normal = self / self.norm()
+        if(decimal == 0): return normal
+        return Vector(*np.around(np.array(normal.to_list()), 2))
 
     def reflect(self, other):
         other = other.normalize()
@@ -197,6 +231,28 @@ class Vector:
         yield self.y
         yield self.z
 
+class Matrix:
+    def __init__(self, *args):
+        data = np.empty((0,3))
+        
+        for i in range(0, len(args), 3):
+            data = np.vstack([data, args[i:i + 3]])
+        
+        self.data = data
+
+    def __str__(self):
+        return str(self.data)
+
+    def __mul__(self, other):
+        if isinstance(other, Vector):
+            return Vector(
+                self.data[0][0] * other.x + self.data[0][1] * other.y + self.data[0][2] * other.z,
+                self.data[1][0] * other.x + self.data[1][1] * other.y + self.data[1][2] * other.z,
+                self.data[2][0] * other.x + self.data[2][1] * other.y + self.data[2][2] * other.z
+            )
+        else:
+            return self.data
+        
 Point = Vector
 
 class Color(Vector):
@@ -225,11 +281,12 @@ class Sphere:
     A sphere object.
     """
 
-    def __init__(self, origin, radius, material, texture=None):
+    def __init__(self, origin, radius, material, texture=None, bump_map=None):
         self.origin = origin
         self.radius = radius
         self.material = material
         self.texture = texture
+        self.bump_map = bump_map
 
     def intersects(self, ray):
         sphere_to_ray = ray.origin - self.origin
@@ -243,10 +300,26 @@ class Sphere:
                 return dist
 
     def surface_norm(self, pt):
-        return (pt - self.origin).normalize()
+        normal = (pt - self.origin).normalize()
+        if(self.bump_map == None): return normal
+        
+        coords = CoordinateSystem(normal)
+        A = coords.i
+        B = coords.j
+        
+        u, v = self._to_unitary_square(pt)
+        Bu, Bv = self.bump_map.from_unitary_square(u, v)
+        
+        D = A * Bu - B * Bv
+        new_normal = (normal + D).normalize()
+        return new_normal
     
     def _to_unitary_square(self, world_point):
         point = (world_point - self.origin) / self.radius
+        
+#         point.x += point.x * math.sin(math.radians(0)) * math.cos(math.radians(-90))
+#         point.y += point.y * math.sin(math.radians(0)) * math.sin(math.radians(-90))
+#         point.z += point.z * math.cos(math.radians(0))
         
         u = 0.5 + (math.atan2(point.z, point.x) / (math.pi * 2))
         v = 0.5 - (2.0 * (math.asin(point.y) / (math.pi * 2)))
@@ -276,7 +349,7 @@ class Texture:
     
     def __init__(self, filepath=""):
         self.image = np.array(Image.open(filepath).convert('RGB'))
-        w, h, color_channels = self.image.shape
+        h, w, color_channels = self.image.shape
         self.width = w - 1
         self.height = h - 1
     
@@ -293,12 +366,54 @@ class Texture:
             startV = posV - 3 if posV == self.height else posV - 2 if posV > 0 else 0
             endV = posV + 3 if posV == 0 else posV + 2 if posV < self.height else self.height
             
-            texel = np.mean(self.image[startU:endU, startV:endV].flatten().reshape(16, 3), axis=0)
+            texel = np.mean(self.image[startV:endV, startU:endU].flatten().reshape(16, 3), axis=0)
         else:
-            texel = self.image[posU, posV]
+            texel = self.image[posV, posU]
             
         return Color(*texel)
         
+class BumpMap(Texture):
+    def __init__(self, filepath=""):
+        self.image_obj = Image.open(filepath).convert('L')
+        self.image = np.array(self.image_obj)
+        h, w = self.image.shape
+        self.width = w - 1
+        self.height = h - 1
+        
+        KernelBu = (
+            -1, 0, 1,
+            -1, 0, 1,
+            -1, 0, 1
+        )
+
+        filterBu = ImageFilter.Kernel(
+            size=(3, 3),
+            kernel=KernelBu,
+            scale=0.2,
+            offset=0
+        )
+
+        KernelBv = (
+             1,  1,  1,
+             0,  0,  0,
+            -1, -1, -1
+        )
+
+        filterBv = ImageFilter.Kernel(
+            size=(3, 3),
+            kernel=KernelBv,
+            scale=0.2,
+            offset=0
+        )
+        
+        self.Bu = np.array(self.image_obj.filter(filterBu))
+        self.Bv = np.array(self.image_obj.filter(filterBv))
+        
+    def from_unitary_square(self, u, v):
+        posU = min(math.floor(u * self.width), self.width)
+        posV = min(math.floor(v * self.height), self.height)
+        
+        return (self.Bu[posV, posU] / 255, self.Bv[posV, posU] / 255)
         
 class Ray:
     """
@@ -308,12 +423,27 @@ class Ray:
     def __init__(self, origin, direction):
         self.origin = origin
         self.direction = direction.normalize()
+        
+    def rotate_direction(self, x, y):
+        matrix_x = Matrix(
+            1,               0,                          0,
+            0,    math.cos(math.radians(x)),  -math.sin(math.radians(x)),
+            0,    math.sin(math.radians(x)),   math.cos(math.radians(x))
+        )
+        
+        matrix_y = Matrix(
+            math.cos(math.radians(y)),     0,   math.sin(math.radians(y)),
+                      0,                   1,            0,
+            -math.sin(math.radians(y)),    0,   math.cos(math.radians(y))
+        )
+        
+        self.direction = matrix_x * ( matrix_y * self.direction )
 
     def point_at_dist(self, dist):
         return self.origin + self.direction * dist
 
 
-# In[4]:
+# In[5]:
 
 
 if __name__ == "__main__":
@@ -330,13 +460,13 @@ if __name__ == "__main__":
 #             specular=0.8)),
 #         Sphere(Point(300, 130, 100), 40, Material(Color(255, 0, 255))),
         Sphere(Point(200, 200, 55), 40, Material(Color(255, 255, 255),
-            lambert=0.5, specular=0.15), Texture('earth-texture.jpg')),
-        Sphere(Point(120, 190, 65), 25, Material(Color(255, 255, 255),
-            lambert=0.5, specular=0.3), Texture('moon-texture.png')),
+            lambert=0.6, specular=0.05), Texture('earth-day.jpg'), BumpMap('earth-day.jpg')),
+#         Sphere(Point(20, 190, 65), 25, Material(Color(255, 255, 255),
+#             lambert=0.5, specular=0.3), Texture('moon-texture.png')),
         ]
-    lights = [Point(200, 100, 50), Point(300, 300, 60), Point(-300, 300, 60), Point(110, 180, 35)]
+    lights = [Point(250, 100, 15), Point(200, 200, 5), Point(50, 250, 15), Point(200, 100, 100)]
     camera = Point(200, 200, 0)
-    scene = Scene(camera, objects, lights, 600, 400, 70)
+    scene = Scene(camera, objects, lights, 800, 600, 1, 0, 90)
     pixels = scene.render()
     
     im = Image.fromarray(pixels.astype(np.uint8), "RGB")
