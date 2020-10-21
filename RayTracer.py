@@ -60,7 +60,7 @@ def ToViewportPoint(center, point, width, height, distance):
     half_h = height / 2
     half_w = width / 2
     
-    viewport_size = (6.6, 5)
+    viewport_size = (400, 300)
     
     x = center.x + (point.x - half_w) * (viewport_size[0]/width) #* (width / height)
     y = center.y + (point.y - half_h) * (viewport_size[1]/height)
@@ -84,20 +84,18 @@ class Scene:
         self.rot_cam_x = rot_cam_x
         self.rot_cam_y = rot_cam_y
 
-    def render(self):
-        """
-        Return a `self.height`x`self.width` 2D array of `Color`s representing
-        the color of each pixel, obtained via ray-tracing.
-        """
-        
+    def render(self, print_exception=False):        
         pixels = np.zeros((self.height, self.width, 3))
         
         for y in range(self.height):
 #             print('row ', y, ' of ', self.height)
             for x in range(self.width):
+                progress_max = self.height * self.width
+                progress = ((y * self.width + x) / progress_max) * 100
+                print('\r[{0}] {1:.2f}%'.format('#'*(int(progress//10)) + '_'*(int(10 - (progress//10))), progress), end='')
+                
                 grid = GeneratePixelGrid(16)
-#                 noisy_points = grid + ToViewportPoint(self.camera, Point(x, y), self.width, self.height, self.viewport_dist)
-#                 noisy_ray_directions = noisy_points - self.camera.to_list()
+                
                 noisy_points = grid + Point(x, y).to_list()
                 noisy_ray_directions = [ToViewportPoint(
                     self.camera, 
@@ -106,15 +104,16 @@ class Scene:
                     self.height, 
                     self.viewport_dist
                 ) for noisy_pt in noisy_points.tolist()]
-#                 check what is causing perspective error
+        
                 colors = np.zeros((0, 3))
                 
                 for ray_direction in noisy_ray_directions:
 #                     direction = Vector(*ray_direction.tolist())
-                    direction = Vector(*ray_direction) - self.camera
-                    origin = self.camera
-                    ray = Ray(origin, direction)
-#                     ray.rotate_direction(self.rot_cam_x, self.rot_cam_y)
+#                     direction = Vector(*ray_direction) - self.camera
+#                     origin = self.camera
+#                     ray = Ray(origin, direction)
+                    ray = Ray(Vector(*ray_direction))
+                    ray.rotate_direction(self.rot_cam_x, self.rot_cam_y)
                     color = self._shoot_ray(ray)
                     colors = np.vstack([colors, color.to_list()])
                 
@@ -122,12 +121,11 @@ class Scene:
 
         return pixels
 
-    def _shoot_ray(self, ray, depth=0, max_depth=5):
+    def _shoot_ray(self, ray, depth=0, max_depth=5, print_exception=True):
         try:
             color = Color()
-
-            if depth >= max_depth:
-                return color
+        
+            if depth >= max_depth: return color
 
             intersection = self._get_intersection(ray)
             if intersection is None:
@@ -154,18 +152,22 @@ class Scene:
             reflection_anchor = ray.direction.reflect(surface_norm).normalize()
             reflected_ray = Ray(intersection_pt, reflection_anchor)
             color += self._shoot_ray(reflected_ray, depth + 1) * obj.material.specular
+            
+            if(color.x >= 255): color.x = 255
+            if(color.y >= 255): color.y = 255
+            if(color.z >= 255): color.z = 255
+                
+            if(color.x <= 0): color.x = 0
+            if(color.y <= 0): color.y = 0
+            if(color.z <= 0): color.z = 0
+            
             return color
         
         except Exception as e:
-            print(str(e))
+            if print_exception: print(str(e))
             return Color()
 
     def _get_intersection(self, ray):
-        """
-        If ray intersects any of `self.objects`, return `obj, dist` (the object
-        itself, and the distance to it). Otherwise, return `None`.
-        """
-
         intersection = None
         for obj in self.objects:
             dist = obj.intersects(ray)
@@ -175,10 +177,6 @@ class Scene:
         return intersection
 
 class Vector:
-    """
-    A generic 3-element vector. All of the methods should be self-explanatory.
-    """
-
     def __init__(self, x=0, y=0, z=0):
         self.x = x
         self.y = y
@@ -317,10 +315,6 @@ class Sphere:
     def _to_unitary_square(self, world_point):
         point = (world_point - self.origin) / self.radius
         
-#         point.x += point.x * math.sin(math.radians(0)) * math.cos(math.radians(-90))
-#         point.y += point.y * math.sin(math.radians(0)) * math.sin(math.radians(-90))
-#         point.z += point.z * math.cos(math.radians(0))
-        
         u = 0.5 + (math.atan2(point.z, point.x) / (math.pi * 2))
         v = 0.5 - (2.0 * (math.asin(point.y) / (math.pi * 2)))
         
@@ -415,14 +409,22 @@ class BumpMap(Texture):
         
         return (self.Bu[posV, posU] / 255, self.Bv[posV, posU] / 255)
         
-class Ray:
-    """
-    A mathematical ray.
-    """
-
-    def __init__(self, origin, direction):
-        self.origin = origin
-        self.direction = direction.normalize()
+class Ray:        
+    
+    def __init__(self, origin, direction=None):
+        if(direction):
+            """
+                Perspective ray
+            """
+            self.origin = origin
+            self.direction = direction.normalize()
+        else:
+            """
+                Parallel ray
+            """
+            z = origin.z - 1 if origin.z != 0 else origin.z - 2
+            self.origin = Point(origin.x, origin.y, z)
+            self.direction = Vector(0,0,z+1).normalize()
         
     def rotate_direction(self, x, y):
         matrix_x = Matrix(
@@ -437,7 +439,8 @@ class Ray:
             -math.sin(math.radians(y)),    0,   math.cos(math.radians(y))
         )
         
-        self.direction = matrix_x * ( matrix_y * self.direction )
+        rot_direction = matrix_x * ( matrix_y * self.direction )
+        self.direction = rot_direction.normalize()
 
     def point_at_dist(self, dist):
         return self.origin + self.direction * dist
@@ -448,25 +451,16 @@ class Ray:
 
 if __name__ == "__main__":
     objects = [
-#         Sphere(
-#             Point(150, 120, -20), 80, Material(Color(255, 0, 0),
-#             specular=0.2)),
-#         Sphere(
-#             Point(420, 120, 0), 100, Material(Color(0, 0, 255),
-#             specular=0.8)),
-#         Sphere(Point(320, 240, -40), 50, Material(Color(0, 255, 0))),
-#         Sphere(
-#             Point(300, 200, 200), 100, Material(Color(255, 255, 0),
-#             specular=0.8)),
-#         Sphere(Point(300, 130, 100), 40, Material(Color(255, 0, 255))),
-        Sphere(Point(200, 200, 55), 40, Material(Color(255, 255, 255),
-            lambert=0.6, specular=0.05), Texture('earth-day.jpg'), BumpMap('earth-day.jpg')),
-#         Sphere(Point(20, 190, 65), 25, Material(Color(255, 255, 255),
-#             lambert=0.5, specular=0.3), Texture('moon-texture.png')),
+        Sphere(Point(200, 200, 50), 40, Material(Color(255, 255, 255),
+            lambert=0.6, specular=0.005), Texture('earth-day.jpg'), BumpMap('earth-day.jpg')),
+        Sphere(Point(80, 190, 75), 25, Material(Color(255, 255, 255),
+            lambert=0.5, specular=0.3), Texture('moon-texture.png'), BumpMap('moon-craters.jpg')),
+        Sphere(Point(300, 250, 300), 100, Material(Color(255, 255, 255),
+            lambert=0.6, specular=0.05), Texture('sun-texture.png'), BumpMap('sun-waves.jpg')),
         ]
-    lights = [Point(250, 100, 15), Point(200, 200, 5), Point(50, 250, 15), Point(200, 100, 100)]
+    lights = [Point(150, 200, 60), Point(300, 50, 100)]
     camera = Point(200, 200, 0)
-    scene = Scene(camera, objects, lights, 800, 600, 1, 0, 90)
+    scene = Scene(camera, objects, lights, 800, 600, 1, 0, 0)
     pixels = scene.render()
     
     im = Image.fromarray(pixels.astype(np.uint8), "RGB")
