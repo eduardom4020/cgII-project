@@ -60,9 +60,9 @@ def ToViewportPoint(center, point, width, height, distance):
     half_h = height / 2
     half_w = width / 2
     
-    viewport_size = (400, 300)
+    viewport_size = (360,180)
     
-    x = center.x + (point.x - half_w) * (viewport_size[0]/width) #* (width / height)
+    x = center.x + (point.x - half_w) * (viewport_size[0]/width)
     y = center.y + (point.y - half_h) * (viewport_size[1]/height)
     z = center.z + distance
     
@@ -108,7 +108,6 @@ class Scene:
                 colors = np.zeros((0, 3))
                 
                 for ray_direction in noisy_ray_directions:
-#                     direction = Vector(*ray_direction.tolist())
 #                     direction = Vector(*ray_direction) - self.camera
 #                     origin = self.camera
 #                     ray = Ray(origin, direction)
@@ -450,20 +449,29 @@ class Ray:
 
 
 if __name__ == "__main__":
-    objects = [
-        Sphere(Point(200, 200, 50), 40, Material(Color(255, 255, 255),
-            lambert=0.6, specular=0.005), Texture('earth-day.jpg'), BumpMap('earth-day.jpg')),
-        Sphere(Point(80, 190, 75), 25, Material(Color(255, 255, 255),
-            lambert=0.5, specular=0.3), Texture('moon-texture.png'), BumpMap('moon-craters.jpg')),
-        Sphere(Point(300, 250, 300), 100, Material(Color(255, 255, 255),
-            lambert=0.6, specular=0.05), Texture('sun-texture.png'), BumpMap('sun-waves.jpg')),
-        ]
-    lights = [Point(150, 200, 60), Point(300, 50, 100)]
+    
+    earth = Sphere(Point(200, 200, 50), 40, Material(Color(255, 255, 255),
+            lambert=0.6, specular=0.005), Texture('earth-day.jpg'), BumpMap('earth-day.jpg'))
+    
+    moon = Sphere(Point(80, 190, 75), 25, Material(Color(255, 255, 255),
+            lambert=0.5, specular=0.3), Texture('moon-texture.png'), BumpMap('moon-craters.jpg'))
+    
+    sun = Sphere(Point(300, 200, 300), 80, Material(Color(255, 255, 255),
+            lambert=0.6, specular=0.05), Texture('sun-texture.png'), BumpMap('sun-waves.jpg'))
+    
+    objects = [earth, moon, sun]
+    lights = [
+        Point(150, 200, 60), 
+        Point(320, 230, 60), 
+        Point(200, 50, 200), 
+        Point(300, 200, 200), 
+        Point(350, 250, 200), 
+        Point(350, 50, 200)
+    ]
     camera = Point(200, 200, 0)
-    scene = Scene(camera, objects, lights, 800, 600, 1, 0, 0)
+    scene = Scene(camera, objects, lights, 640, 360, 1, 0, 0)
     pixels = scene.render()
     
     im = Image.fromarray(pixels.astype(np.uint8), "RGB")
     im.save("scene.png")
-#     im.show()
 
